@@ -122,9 +122,10 @@ def resnet_train_step(sess, train_op, global_step, train_step_kwargs):
   start_time = time.time()
 
   total_loss = tf.get_collection('total_loss')[0]
+  v, clean_v, noise_v = tf.get_collection('v')
 
-  _, np_global_step, total_loss_val = sess.run(
-      [train_op, global_step, total_loss])
+  _, np_global_step, total_loss_val, all_v_np, clean_v_np, noise_v_np = sess.run(
+      [train_op, global_step, total_loss, v, clean_v, noise_v])
 
   time_elapsed = time.time() - start_time
 
@@ -137,6 +138,14 @@ def resnet_train_step(sess, train_op, global_step, train_step_kwargs):
     should_stop = sess.run(train_step_kwargs['should_stop'])
   else:
     should_stop = False
+
+  with open('all_v.csv', 'a') as f:
+    np.savetxt(f, np.reshape(all_v_np, [1, -1]), delimiter=',')
+  with open('clean_v.csv', 'a') as f:
+    np.savetxt(f, np.reshape(clean_v_np, [1, -1]), delimiter=',')
+  with open('noise_v.csv', 'a') as f:
+    np.savetxt(f, np.reshape(noise_v_np, [1, -1]), delimiter=',')
+
   return total_loss, should_stop
 
 
@@ -155,7 +164,7 @@ def train_resnet_mentornet(max_step_run):
       tf_global_step = tf.train.get_or_create_global_step()
 
       # pylint: disable=line-too-long
-      images, one_hot_labels, num_samples_per_epoch, num_of_classes = cifar_data_provider.provide_resnet_data(
+      images, one_hot_labels, clean_images, clean_one_hot_labels, num_samples_per_epoch, num_of_classes = cifar_data_provider.my_provide_resnet_data(
           FLAGS.dataset_name,
           'train',
           FLAGS.batch_size,
@@ -210,6 +219,17 @@ def train_resnet_mentornet(max_step_run):
           loss_moving_average_decay=FLAGS.loss_moving_average_decay)
 
       tf.stop_gradient(v)
+
+      # Split v into clean data & noise data part
+      is_clean = tf.reshape(tf.reduce_all(tf.equal(one_hot_labels, clean_one_hot_labels), axis=1), [-1,1])
+      clean_v = tf.boolean_mask(v, is_clean)
+      noise_v = tf.boolean_mask(v, ~is_clean)
+      tf.add_to_collection('v', v)
+      tf.add_to_collection('v', clean_v)
+      tf.add_to_collection('v', noise_v)
+
+      slim.summaries.add_histogram_summary(tf.boolean_mask(v, is_clean), 'clean_v')
+      slim.summaries.add_histogram_summary(tf.boolean_mask(v, ~is_clean), 'noisy_v')
 
       # Log data utilization
       data_util = utils.summarize_data_utilization(v, tf_global_step,
@@ -323,7 +343,7 @@ def train_inception_mentornet(max_step_run):
     with tf.device(tf.train.replica_device_setter(FLAGS.ps_tasks)):
       config = tf.ConfigProto()
       # limit gpu memory to run train and eval on the same gpu
-      config.gpu_options.per_process_gpu_memory_fraction = 0.45
+      config.gpu_options.per_process_gpu_memory_fraction = 0.8
 
       tf_global_step = tf.train.get_or_create_global_step()
 
